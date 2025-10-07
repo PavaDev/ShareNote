@@ -92,8 +92,11 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useStore } from 'vuex'
 
-// ใช้ default ที่โฟลเดอร์ public ตามที่ขอ
-const DEFAULT_AVATAR = '/public/default-avatar.svg'
+// Base64 encoded placeholder avatar (no network request needed)
+const PLACEHOLDER_AVATAR = 'data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"%3E%3Ccircle cx="50" cy="50" r="50" fill="%23e5e7eb"/%3E%3Ctext x="50" y="58" text-anchor="middle" font-size="45" font-family="system-ui" fill="%239ca3af" font-weight="600"%3EU%3C/text%3E%3C/svg%3E'
+
+// Fallback to public folder (secondary)
+const DEFAULT_AVATAR = '/default-avatar.svg' // Remove /public/ - it's not needed in production
 
 export default {
   setup() {
@@ -108,9 +111,21 @@ export default {
     const avatarSrc = computed(() => {
       const u = currentUser.value
       const raw = u?.profile?.profilePicture || u?.profilePicture || u?.avatarUrl || null
-      if (!raw) return DEFAULT_AVATAR
+      
+      // If no avatar, return placeholder immediately
+      if (!raw) return PLACEHOLDER_AVATAR
+      
+      // Add ngrok bypass and cache busting
+      const apiBase = import.meta.env.VITE_API_BASE_URL?.replace('/api', '') || ''
       const ver = u?.updatedAt || Date.now()
-      return `${raw}${raw.includes('?') ? '&' : '?'}v=${ver}`
+      
+      // Handle full URLs
+      if (raw.startsWith('http')) {
+        return `${raw}${raw.includes('?') ? '&' : '?'}ngrok-skip-browser-warning=true&v=${ver}`
+      }
+      
+      // Handle relative paths
+      return `${apiBase}${raw}${raw.includes('?') ? '&' : '?'}ngrok-skip-browser-warning=true&v=${ver}`
     })
 
     const displayName = computed(() =>
@@ -124,15 +139,41 @@ export default {
       showDropdown.value = false
       store.dispatch('auth/logout')
     }
+
     const handleClickOutside = (e) => {
-      if (dropdownRef.value && !dropdownRef.value.contains(e.target)) showDropdown.value = false
+      if (dropdownRef.value && !dropdownRef.value.contains(e.target)) {
+        showDropdown.value = false
+      }
     }
-    const onAvatarError = (e) => { e.target.src = `${DEFAULT_AVATAR}?v=${Date.now()}` }
 
+    // CRITICAL FIX: Prevent infinite loop
+    const onAvatarError = (e) => {
+      // Stop the error handler from running again
+      e.target.onerror = null
+      
+      // Use base64 placeholder (instant, no network request)
+      e.target.src = PLACEHOLDER_AVATAR
+    }
+
+    onMounted(() => {
+      document.addEventListener('click', handleClickOutside)
+    })
     
-    onUnmounted(() => document.removeEventListener('click', handleClickOutside))
+    onUnmounted(() => {
+      document.removeEventListener('click', handleClickOutside)
+    })
 
-    return { currentUser, isAdmin, isAuthed, avatarSrc, displayName, showDropdown, dropdownRef, logout, onAvatarError }
+    return { 
+      currentUser, 
+      isAdmin, 
+      isAuthed, 
+      avatarSrc, 
+      displayName, 
+      showDropdown, 
+      dropdownRef, 
+      logout, 
+      onAvatarError 
+    }
   }
 }
 </script>

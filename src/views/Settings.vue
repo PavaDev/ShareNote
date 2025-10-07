@@ -81,7 +81,7 @@
 import { ref, computed, onMounted } from 'vue'
 import { useStore } from 'vuex'
 import api from '../services/api'
-import AvatarCropper from '../views/AvatarCropper.vue' // ใช้คอมโพเนนต์จาก components
+import AvatarCropper from '../views/AvatarCropper.vue'
 
 const FALLBACK_DEFAULT = '/default-avatar.svg'
 
@@ -114,6 +114,7 @@ export default {
         provider.value = data?.provider || 'LOCAL'
         const base = data?.profilePicture || FALLBACK_DEFAULT
         currentAvatarUrl.value = `${base}${String(base).includes('?') ? '&' : '?'}v=${Date.now()}`
+        console.log(currentAvatarUrl.value)
       } catch {
         store.dispatch('ui/showToast', { message: 'Failed to load profile', type: 'error' })
       }
