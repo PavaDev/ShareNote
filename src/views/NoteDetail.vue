@@ -30,14 +30,14 @@
               <span>{{ formatDate(note.createdAt) }}</span>
             </div>
             <div v-if="note.tags?.length" class="flex flex-wrap gap-2 my-5">
-                <span
-                  v-for="t in note.tags"
-                  :key="t"
-                  class="px-2 py-0.5 rounded-full bg-gray-100 text-gray-700 text-xs"
-                >
-                  #{{ t }}
-                </span>
-              </div>
+              <span
+                v-for="t in note.tags"
+                :key="t"
+                class="px-2 py-0.5 rounded-full bg-gray-100 text-gray-700 text-xs"
+              >
+                #{{ t }}
+              </span>
+            </div>
           </div>
 
           <!-- Quick actions -->
@@ -115,7 +115,7 @@
           </div>
         </div>
         
-        <!-- PDF (หน้าแรก) -->
+        <!-- PDF (first page) -->
         <div v-else-if="isPdf" class="rounded-xl border border-gray-100 overflow-hidden">
           <div v-if="mediaBlobUrl">
             <VuePdfEmbed :source="mediaBlobUrl" :page="1" class="w-full" />
@@ -216,8 +216,6 @@ import { useStore } from 'vuex'
 import { useRoute } from 'vue-router'
 import LoadingSpinner from '../components/common/LoadingSpinner.vue'
 import api from '../services/api'
-
-// PDF viewer
 import VuePdfEmbed from 'vue-pdf-embed'
 import { GlobalWorkerOptions } from 'pdfjs-dist/build/pdf'
 GlobalWorkerOptions.workerSrc =
@@ -254,6 +252,7 @@ export default {
     const commentSubmitting = ref(false)
     const justLiked = ref(false)
     const justFavorited = ref(false)
+    const commentContent = ref('')
 
     // Media blob URL for prefetched files
     const mediaBlobUrl = ref(null)
@@ -261,8 +260,38 @@ export default {
     // --- Avatar prefetch state ---
     const authorAvatarBlob = ref(null)           // blob url for author avatar
     const commentAvatarMap = ref({})            // { [commentId]: blobUrl }
-    // keep track of previously prefetched urls to avoid refetching
-    const _prefetchedCommentSources = new Map()
+    const _prefetchedCommentSources = new Map() // tracks last source per comment id to avoid refetch
+
+    // Fetch file with ngrok header then return object URL (or null)
+    const fetchFileWithHeaders = async (url) => {
+      try {
+        const response = await fetch(url, {
+          headers: { 'ngrok-skip-browser-warning': 'true' }
+        })
+        if (!response.ok) throw new Error(`Failed to fetch ${url} (${response.status})`)
+        const blob = await response.blob()
+        return URL.createObjectURL(blob)
+      } catch (error) {
+        return null
+      }
+    }
+
+    // Fallback fetch without headers
+    const fetchFileWithoutHeaders = async (url) => {
+      try {
+        const resp = await fetch(url)
+        if (!resp.ok) throw new Error(`Failed to fetch ${url} (${resp.status})`)
+        const blob = await resp.blob()
+        return URL.createObjectURL(blob)
+      } catch (err) {
+        return null
+      }
+    }
+
+    // Revoke blob helper
+    const revokeBlobIfNeeded = (blobUrl) => {
+      try { if (blobUrl && blobUrl.startsWith('blob:')) URL.revokeObjectURL(blobUrl) } catch (e) {}
+    }
 
     // Watch for changes from store and sync to local state
     watch(() => note.value, (newNote) => {
@@ -277,37 +306,11 @@ export default {
       localComments.value = newComments.map(c => ({ ...c, isNew: false }))
     }, { immediate: true })
 
-    // Fetch file with ngrok headers and return object URL
-    const fetchFileWithHeaders = async (url) => {
-      try {
-        const response = await fetch(url, {
-          headers: { 'ngrok-skip-browser-warning': 'true' }
-        })
-        if (!response.ok) throw new Error(`Failed to fetch ${url} (${response.status})`)
-        const blob = await response.blob()
-        return URL.createObjectURL(blob)
-      } catch (error) {
-        console.error('Error fetching file:', error)
-        return null
-      }
-    }
-
-    // Revoke blob helper
-    const revokeBlobIfNeeded = (blobUrl) => {
-      try {
-        if (blobUrl && blobUrl.startsWith('blob:')) URL.revokeObjectURL(blobUrl)
-      } catch (e) { /* ignore */ }
-    }
-
     // Watch for media file path changes and prefetch
     watch(
       () => note.value?.filePath,
       async (newPath) => {
-        // Clean up old blob URL
-        if (mediaBlobUrl.value) {
-          URL.revokeObjectURL(mediaBlobUrl.value)
-          mediaBlobUrl.value = null
-        }
+        if (mediaBlobUrl.value) { revokeBlobIfNeeded(mediaBlobUrl.value); mediaBlobUrl.value = null }
 
         if (newPath && note.value) {
           const fileType = note.value.fileType || ''
@@ -317,7 +320,7 @@ export default {
             const base = note.value.filePath
             const ver = note.value?.updatedAt || Date.now()
             const url = `${base}${base.includes('?') ? '&' : '?'}v=${ver}`
-            mediaBlobUrl.value = await fetchFileWithHeaders(url)
+            mediaBlobUrl.value = await fetchFileWithHeaders(url) || await fetchFileWithoutHeaders(url)
           }
         }
       },
@@ -328,86 +331,62 @@ export default {
     watch(
       () => note.value?.author?.profile?.profilePicture,
       async (raw) => {
-        // cleanup previous
         if (authorAvatarBlob.value) { revokeBlobIfNeeded(authorAvatarBlob.value); authorAvatarBlob.value = null }
-
         if (!raw) return
 
-        // try with ngrok header first (handles ngrok interstitial)
         const ver = note.value?.author?.updatedAt || note.value?.updatedAt || Date.now()
         const url = `${raw}${raw.includes('?') ? '&' : '?'}v=${ver}`
 
-        const obj = await fetchFileWithHeaders(url)
-        if (obj) {
-          authorAvatarBlob.value = obj
-          return
-        }
+        let obj = await fetchFileWithHeaders(url)
+        if (!obj) obj = await fetchFileWithoutHeaders(url)
 
-        // fallback: try without header
-        try {
-          const resp = await fetch(url)
-          if (resp.ok) {
-            const blob = await resp.blob()
-            authorAvatarBlob.value = URL.createObjectURL(blob)
-            return
-          }
-        } catch (e) {
-          /* ignore */
-        }
-
-        // else leave null -> default will be used
-        authorAvatarBlob.value = null
+        if (obj) authorAvatarBlob.value = obj
+        else authorAvatarBlob.value = null
       },
       { immediate: true }
     )
 
     // --- Prefetch avatars for comments (map by comment id) ---
     watch(
-      () => localComments.value.slice(), // watch shallow copy
+      () => localComments.value.slice(),
       async (newComments) => {
-        // revoke blobs that are no longer present
+        // Revoke blobs for comments removed
         const presentIds = new Set(newComments.map(c => String(c.id)))
         for (const key of Object.keys(commentAvatarMap.value)) {
           if (!presentIds.has(String(key))) {
             revokeBlobIfNeeded(commentAvatarMap.value[key])
-            delete commentAvatarMap.value[key]
+            // ensure reactivity when removing
+            const copy = { ...commentAvatarMap.value }
+            delete copy[key]
+            commentAvatarMap.value = copy
             _prefetchedCommentSources.delete(key)
           }
         }
 
-        // fetch any missing ones
+        // Prefetch missing avatars
         for (const c of newComments) {
           const cid = String(c.id)
           const source = c.authorProfile || null
           if (!source) continue
 
-          // avoid refetching same source for same comment
+          // if we've already prefetched same source for this comment, skip
           const last = _prefetchedCommentSources.get(cid)
           if (last && last === source && commentAvatarMap.value[cid]) continue
 
           // revoke previous if exists
           if (commentAvatarMap.value[cid]) {
             revokeBlobIfNeeded(commentAvatarMap.value[cid])
-            delete commentAvatarMap.value[cid]
+            const copy = { ...commentAvatarMap.value }
+            delete copy[cid]
+            commentAvatarMap.value = copy
           }
 
           const ver = c.updatedAt || c.createdAt || Date.now()
           const url = `${source}${source.includes('?') ? '&' : '?'}v=${ver}`
 
-          // try with header
+          // try header first, then fallback
           let obj = await fetchFileWithHeaders(url)
-          if (!obj) {
-            // fallback: try without header
-            try {
-              const resp = await fetch(url)
-              if (resp.ok) {
-                const blob = await resp.blob()
-                obj = URL.createObjectURL(blob)
-              }
-            } catch (e) {
-              console.warn('Comment avatar fetch failed for', url, e)
-            }
-          }
+          if (!obj) obj = await fetchFileWithoutHeaders(url)
 
           if (obj) {
             commentAvatarMap.value = { ...commentAvatarMap.value, [cid]: obj }
@@ -427,10 +406,7 @@ export default {
       await store.dispatch('notes/fetchComments', id)
     })
 
-    const commentContent = ref('')
-
-    // ... (existing handleLike / handleFavorite / submitComment / deleteComment code stays the same)
-    // I'll re-use the existing implementations from your original file:
+    // ===== Actions (same implementations) =====
     const handleLike = async () => {
       if (likeLoading.value) return
       likeLoading.value = true
@@ -529,30 +505,17 @@ export default {
 
     // authorAvatar returns blob URL when prefetched, otherwise PRIMARY_DEFAULT
     const authorAvatar = computed(() => authorAvatarBlob.value || PRIMARY_DEFAULT)
-
-    const onAuthorAvatarError = (e) => {
-      e.target.src = `${FALLBACK_DEFAULT}?v=${Date.now()}`
-    }
+    const onAuthorAvatarError = (e) => { e.target.src = `${FALLBACK_DEFAULT}?v=${Date.now()}` }
 
     // commentAvatar(c) returns blob URL for a comment or PRIMARY_DEFAULT
     const commentAvatar = (c) => {
       const cid = String(c.id)
       return commentAvatarMap.value[cid] || PRIMARY_DEFAULT
     }
-
-    const onCommentAvatarError = (e) => {
-      e.target.src = `${FALLBACK_DEFAULT}?v=${Date.now()}`
-    }
+    const onCommentAvatarError = (e) => { e.target.src = `${FALLBACK_DEFAULT}?v=${Date.now()}` }
 
     const displayAuthor = (c) => c.authorName || 'Someone'
-
-    const formatDate = (iso) => {
-      try {
-        return new Date(iso).toLocaleString()
-      } catch {
-        return ''
-      }
-    }
+    const formatDate = (iso) => { try { return new Date(iso).toLocaleString() } catch { return '' } }
 
     // Cleanup on unmount
     onUnmounted(() => {
