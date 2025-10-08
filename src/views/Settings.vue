@@ -78,11 +78,12 @@
 </template>
 
 <script>
-import { ref, computed, onMounted } from 'vue'
+import { ref, computed, onMounted, watch, onUnmounted } from 'vue'
 import { useStore } from 'vuex'
 import api from '../services/api'
 import AvatarCropper from '../views/AvatarCropper.vue'
 
+const PRIMARY_DEFAULT = '/public/default-avatar.svg'
 const FALLBACK_DEFAULT = '/default-avatar.svg'
 
 export default {
@@ -97,13 +98,75 @@ export default {
     // ฟอร์มโปรไฟล์
     const profileForm = ref({ name: '', bio: '' })
 
-    // avatar preview
-    const currentAvatarUrl = ref(FALLBACK_DEFAULT)
+    // avatar prefetch state
+    const avatarBlob = ref(null)     // blob: URL when prefetched
+    let lastAvatarSource = null     // to avoid refetching same URL unnecessarily
+
+    // computed currentAvatarUrl used in template (blob or default)
+    const currentAvatarUrl = computed(() => avatarBlob.value || `${PRIMARY_DEFAULT}`)
+
     const onAvatarError = (e) => { e.target.src = `${FALLBACK_DEFAULT}?v=${Date.now()}` }
 
     // modal cropper
     const showCropper = ref(false)
     const croppedFile = ref(null)
+
+    // utility: fetch with ngrok header and return object URL or null
+    const fetchFileWithHeaders = async (url) => {
+      try {
+        const response = await fetch(url, {
+          headers: { 'ngrok-skip-browser-warning': 'true' }
+        })
+        if (!response.ok) throw new Error(`Failed to fetch ${url} (${response.status})`)
+        const blob = await response.blob()
+        return URL.createObjectURL(blob)
+      } catch (err) {
+        return null
+      }
+    }
+
+    // fallback fetch without headers
+    const fetchFileWithoutHeaders = async (url) => {
+      try {
+        const resp = await fetch(url)
+        if (!resp.ok) throw new Error(`Failed to fetch ${url} (${resp.status})`)
+        const blob = await resp.blob()
+        return URL.createObjectURL(blob)
+      } catch (err) {
+        return null
+      }
+    }
+
+    const revokeBlobIfNeeded = (u) => {
+      try { if (u && String(u).startsWith('blob:')) URL.revokeObjectURL(u) } catch (e) {}
+    }
+
+    // helper to prefetch avatar (url may be null/undefined)
+    const prefetchAvatar = async (rawUrl, ver = Date.now()) => {
+      // clean previous
+      if (avatarBlob.value) { revokeBlobIfNeeded(avatarBlob.value); avatarBlob.value = null }
+      lastAvatarSource = null
+
+      if (!rawUrl) return
+
+      const url = `${rawUrl}${String(rawUrl).includes('?') ? '&' : '?'}v=${ver}`
+
+      if (lastAvatarSource === url && avatarBlob.value) return
+
+      // try with ngrok header first
+      let obj = await fetchFileWithHeaders(url)
+      if (!obj) {
+        // fallback without header
+        obj = await fetchFileWithoutHeaders(url)
+      }
+
+      if (obj) {
+        avatarBlob.value = obj
+        lastAvatarSource = url
+      } else {
+        avatarBlob.value = null
+      }
+    }
 
     // โหลดข้อมูลโปรไฟล์ (รวม provider จาก backend)
     const loadProfile = async () => {
@@ -112,14 +175,37 @@ export default {
         profileForm.value.name = data?.name || ''
         profileForm.value.bio = data?.bio || ''
         provider.value = data?.provider || 'LOCAL'
-        const base = data?.profilePicture || FALLBACK_DEFAULT
-        currentAvatarUrl.value = `${base}${String(base).includes('?') ? '&' : '?'}v=${Date.now()}`
-        console.log(currentAvatarUrl.value)
-      } catch {
+
+        // sync store user profile too
+        const token = store.state.auth?.token || localStorage.getItem('token')
+        const prev  = store.getters['auth/currentUser'] || {}
+        store.commit('auth/SET_AUTH', {
+          token,
+          user: { ...prev, username: data?.username || prev.username, profile: data }
+        })
+
+        // prefetch avatar using returned profilePicture
+        const base = data?.profilePicture || null
+        const ver = data?.updatedAt || Date.now()
+        await prefetchAvatar(base, ver)
+      } catch (err) {
         store.dispatch('ui/showToast', { message: 'Failed to load profile', type: 'error' })
       }
     }
+
     onMounted(loadProfile)
+
+    // watch store current user profile/fields and prefetch when changed externally
+    watch(
+      () => store.getters['auth/currentUser'],
+      (u) => {
+        const profile = u?.profile || null
+        const raw = profile?.profilePicture || u?.profilePicture || u?.avatarUrl || null
+        const ver = profile?.updatedAt || u?.updatedAt || Date.now()
+        if (raw) prefetchAvatar(raw, ver)
+      },
+      { immediate: true }
+    )
 
     // เปิด/ปิด cropper
     const openCropper = () => { showCropper.value = true }
@@ -145,17 +231,20 @@ export default {
           headers: { 'Content-Type': 'multipart/form-data' }
         })
 
-        const base = updated?.profilePicture || FALLBACK_DEFAULT
-        currentAvatarUrl.value = `${base}${String(base).includes('?') ? '&' : '?'}v=${Date.now()}`
+        // prefetch the new profile picture
+        const base = updated?.profilePicture || null
+        const ver = updated?.updatedAt || Date.now()
+        await prefetchAvatar(base, ver)
+
         croppedFile.value = null
 
-        // sync user ใน store
+        // sync user in store
         const token = store.state.auth?.token || localStorage.getItem('token')
         const user = (store.getters['auth/currentUser']) || {}
         store.commit('auth/SET_AUTH', { token, user: { ...user, profile: updated } })
 
         store.dispatch('ui/showToast', { message: 'Profile picture updated', type: 'success' })
-      } catch {
+      } catch (err) {
         store.dispatch('ui/showToast', { message: 'Failed to update picture', type: 'error' })
       }
     }
@@ -165,10 +254,18 @@ export default {
       if (!confirm('Remove profile picture?')) return
       try {
         const { data } = await api.delete('/profile/me/picture')
-        const base = data?.profilePicture || FALLBACK_DEFAULT
-        currentAvatarUrl.value = `${base}${String(base).includes('?') ? '&' : '?'}v=${Date.now()}`
+        const base = data?.profilePicture || null
+        const ver = data?.updatedAt || Date.now()
+        await prefetchAvatar(base, ver)
+
+        // update store profile if present
+        const token = store.state.auth?.token || localStorage.getItem('token')
+        const user = (store.getters['auth/currentUser']) || {}
+        const updatedProfile = data || (user.profile || {})
+        store.commit('auth/SET_AUTH', { token, user: { ...user, profile: updatedProfile } })
+
         store.dispatch('ui/showToast', { message: 'Profile picture removed', type: 'success' })
-      } catch {
+      } catch (err) {
         store.dispatch('ui/showToast', { message: 'Failed to remove picture', type: 'error' })
       }
     }
@@ -187,15 +284,18 @@ export default {
           headers: { 'Content-Type': 'multipart/form-data' }
         })
 
-        const base = updated?.profilePicture || FALLBACK_DEFAULT
-        currentAvatarUrl.value = `${base}${String(base).includes('?') ? '&' : '?'}v=${Date.now()}`
+        // prefetch updated avatar if present
+        const base = updated?.profilePicture || null
+        const ver = updated?.updatedAt || Date.now()
+        await prefetchAvatar(base, ver)
+
         const token = store.state.auth?.token || localStorage.getItem('token')
         const user = (store.getters['auth/currentUser']) || {}
         store.commit('auth/SET_AUTH', { token, user: { ...user, profile: updated } })
 
         croppedFile.value = null
         store.dispatch('ui/showToast', { message: 'Profile updated successfully', type: 'success' })
-      } catch {
+      } catch (err) {
         store.dispatch('ui/showToast', { message: 'Failed to update profile', type: 'error' })
       }
     }
@@ -237,6 +337,11 @@ export default {
         store.dispatch('ui/showToast', { message: msg, type: 'error' })
       }
     }
+
+    // cleanup on unmount: revoke object URLs
+    onUnmounted(() => {
+      if (avatarBlob.value) { revokeBlobIfNeeded(avatarBlob.value); avatarBlob.value = null }
+    })
 
     return {
       // profile

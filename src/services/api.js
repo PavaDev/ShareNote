@@ -3,11 +3,8 @@ import store from '../store'
 import router from '../components/router'
 
 const api = axios.create({
-  baseURL: 'https://penetralian-subinternal-danny.ngrok-free.dev/api',
-  headers: {
-    'Content-Type': 'application/json',
-    'ngrok-skip-browser-warning': 'true' 
-  }
+  baseURL: '/api',
+  timeout: 10000,
 })
 
 api.interceptors.request.use(

@@ -6,7 +6,6 @@
     @click="goDetail"
     @keydown.enter.prevent="goDetail"
   >
-    <!-- Badge public/private -->
     <span
       v-if="showVisibility"
       class="absolute top-3 right-3 z-20 px-2 py-0.5 text-[11px] font-semibold rounded-full text-white shadow-md pointer-events-none select-none"
@@ -15,28 +14,40 @@
       {{ isPublicFlag ? 'public' : 'private' }}
     </span>
 
-    <!-- Header media: Image -->
     <div
       v-if="note.filePath && note.fileType?.startsWith('image')"
       class="h-48 overflow-hidden rounded-t-2xl relative z-0"
     >
-      <img :src="note.filePath" :alt="note.title" class="w-full h-full object-cover">
+      <img v-if="imageUrl" :src="imageUrl" :alt="note.title" class="w-full h-full object-cover">
+      <div v-else class="w-full h-full flex items-center justify-center bg-gray-100">
+        <div class="loading-spinner"></div>
+      </div>
     </div>
 
-    <!-- Header media: PDF page 1 -->
     <div
       v-else-if="note.filePath && note.fileType === 'application/pdf'"
       class="pdf-thumb h-48 overflow-hidden rounded-t-2xl bg-white relative z-0"
     >
       <VuePdfEmbed
-        :source="note.filePath"
+        v-if="pdfBlobUrl"
+        :source="pdfBlobUrl"
         :page="1"
         class="w-full h-full block"
         style="pointer-events:none"
       />
+      <div v-else class="w-full h-full flex items-center justify-center bg-gray-100">
+        <div class="loading-spinner"></div>
+      </div>
     </div>
 
     <div class="p-6">
+      <span
+        v-for="tag in note.tags"
+        :key="tag"
+        class="inline-block my-2 mr-2 px-2 py-0.5 text-xs rounded-full bg-primary-50 text-primary-700 border border-primary-100"
+      >
+        #{{ tag }}
+      </span>
       <div class="flex items-start justify-between mb-3">
         <h3 class="text-lg font-semibold text-gray-800 flex-1">{{ note.title }}</h3>
       </div>
@@ -44,8 +55,7 @@
       <p class="text-gray-600 mb-4 line-clamp-3">{{ note.content }}</p>
 
       <div class="flex items-center justify-between text-sm text-gray-500">
-        <div class="flex items-center space-x-4">
-          <!-- 👍 Like: ให้เจ้าของกดได้ถ้า allowOwnerActions = true -->
+        <div v-if="!hideInteractions" class="flex items-center space-x-4">
           <button
             v-if="!isOwner || allowOwnerActions"
             @click.stop="$emit('like', note.id)"
@@ -58,7 +68,6 @@
             <span>{{ note.likeCount ?? 0 }}</span>
           </button>
 
-          <!-- 💬 Comment: ซ่อนสำหรับเจ้าของตามเดิม -->
           <button
             v-if="!isOwner"
             @click.stop="$emit('comment', note.id)"
@@ -71,7 +80,6 @@
             <span>{{ note.commentCount ?? (note.comments?.length ?? 0) }}</span>
           </button>
 
-          <!-- ⭐ Favorite: ให้เจ้าของกดถอดดาวได้ถ้า allowOwnerActions = true -->
           <button
             v-if="!isOwner || allowOwnerActions"
             @click.stop="$emit('favorite', note.id)"
@@ -96,7 +104,8 @@
       </div>
 
       <div class="mt-3 pt-3 border-t flex items-center space-x-2">
-        <img :src="avatarUrl" class="w-6 h-6 rounded-full" alt="avatar" />
+        <!-- use computed avatarUrl (prefetched blob OR default) -->
+        <img :src="avatarUrl" class="w-6 h-6 rounded-full object-cover ring-1 ring-gray-200" alt="avatar" />
         <span class="text-xs text-gray-500">{{ authorName }}</span>
         <span class="text-xs text-gray-400">•</span>
         <span class="text-xs text-gray-500">{{ formatDate(note.createdAt) }}</span>
@@ -107,12 +116,13 @@
 
 <script>
 import { useRouter } from 'vue-router'
-import { computed } from 'vue'
+import { computed, ref, watch, onUnmounted } from 'vue'
 import VuePdfEmbed from 'vue-pdf-embed'
 import { GlobalWorkerOptions } from 'pdfjs-dist/build/pdf'
 GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js'
 
 const DEFAULT_AVATAR = '/public/default-avatar.svg'
+const FALLBACK_DEFAULT = '/default-avatar.svg' // used when fetch fails
 
 export default {
   components: { VuePdfEmbed },
@@ -120,11 +130,110 @@ export default {
     note: { type: Object, required: true },
     isOwner: { type: Boolean, default: false },
     showVisibility: { type: Boolean, default: false },
-    /** ✅ เปิดให้เจ้าของกด like / favorite ได้ (ใช้บนหน้า Favorites) */
-    allowOwnerActions: { type: Boolean, default: false }
+    allowOwnerActions: { type: Boolean, default: false },
+    hideInteractions: { type: Boolean, default: false }
   },
   setup (props) {
     const router = useRouter()
+    const pdfBlobUrl = ref(null)
+    const imageUrl = ref(null)
+
+    // Prefetched avatar blob url
+    const avatarBlobUrl = ref(null)
+    // Keep track of last fetched original URL so we revoke previous blob correctly
+    let lastAvatarSource = null
+
+    // Utility: fetch with ngrok header and return object URL
+    const fetchFileWithHeaders = async (url) => {
+      try {
+        const response = await fetch(url, {
+          headers: { 'ngrok-skip-browser-warning': 'true' }
+        })
+        if (!response.ok) throw new Error(`Failed to fetch ${url} (${response.status})`)
+        const blob = await response.blob()
+        return URL.createObjectURL(blob)
+      } catch (error) {
+        console.error('Error fetching file:', error)
+        return null
+      }
+    }
+
+    // Revoke blob helper
+    const revokeBlobIfNeeded = (blobUrl) => {
+      try {
+        if (blobUrl && blobUrl.startsWith('blob:')) URL.revokeObjectURL(blobUrl)
+      } catch (e) { /* ignore */ }
+    }
+
+    // Watch note.filePath for media prefetcing (image/pdf)
+    watch(
+      () => props.note.filePath,
+      async (newPath) => {
+        // cleanup old blob urls
+        if (pdfBlobUrl.value) { revokeBlobIfNeeded(pdfBlobUrl.value); pdfBlobUrl.value = null }
+        if (imageUrl.value) { revokeBlobIfNeeded(imageUrl.value); imageUrl.value = null }
+
+        if (newPath) {
+          if (props.note.fileType === 'application/pdf') {
+            pdfBlobUrl.value = await fetchFileWithHeaders(newPath)
+          } else if (props.note.fileType?.startsWith('image')) {
+            imageUrl.value = await fetchFileWithHeaders(newPath)
+          }
+        }
+      },
+      { immediate: true }
+    )
+
+    // Prefetch avatar when author.profile.profilePicture changes
+    watch(
+      () => props.note.author?.profile?.profilePicture,
+      async (rawUrl) => {
+        // revoke previous blob if any
+        if (avatarBlobUrl.value) { revokeBlobIfNeeded(avatarBlobUrl.value); avatarBlobUrl.value = null }
+        lastAvatarSource = null
+
+        if (!rawUrl) {
+          // nothing to fetch, will use DEFAULT_AVATAR
+          return
+        }
+
+        // try to fetch avatar with ngrok header
+        try {
+          const objUrl = await fetchFileWithHeaders(rawUrl)
+          if (objUrl) {
+            avatarBlobUrl.value = objUrl
+            lastAvatarSource = rawUrl
+            return
+          }
+        } catch (e) {
+          console.error('Avatar fetch failed:', e)
+        }
+
+        // fallback: try without header (just in case) or use fallback default
+        try {
+          const resp = await fetch(rawUrl)
+          if (resp.ok) {
+            const blob = await resp.blob()
+            const obj = URL.createObjectURL(blob)
+            avatarBlobUrl.value = obj
+            lastAvatarSource = rawUrl
+            return
+          }
+        } catch (e) {
+          console.warn('Avatar fetch without header failed:', e)
+        }
+
+        // final fallback -> leave avatarBlobUrl null so DEFAULT_AVATAR is used
+        avatarBlobUrl.value = null
+      },
+      { immediate: true }
+    )
+
+    // computed avatar url used in template (blob or default)
+    const avatarUrl = computed(() => {
+      return avatarBlobUrl.value || DEFAULT_AVATAR
+    })
+
     const goDetail = () => router.push(`/notes/${props.note.id}`)
 
     const isPublicFlag = computed(() =>
@@ -141,9 +250,6 @@ export default {
     const liked = computed(() => props.note.isLikedByCurrentUser ?? props.note.isLiked ?? false)
     const favorited = computed(() => props.note.isFavoritedByCurrentUser ?? props.note.isFavorited ?? false)
 
-    const avatarUrl = computed(() =>
-      props.note.author?.profile?.profilePicture || DEFAULT_AVATAR
-    )
     const authorName = computed(() =>
       props.note.author?.profile?.name ||
       props.note.author?.name ||
@@ -156,6 +262,13 @@ export default {
       } catch { return '' }
     }
 
+    // cleanup on unmount
+    onUnmounted(() => {
+      if (pdfBlobUrl.value) revokeBlobIfNeeded(pdfBlobUrl.value)
+      if (imageUrl.value) revokeBlobIfNeeded(imageUrl.value)
+      if (avatarBlobUrl.value) revokeBlobIfNeeded(avatarBlobUrl.value)
+    })
+
     return {
       goDetail,
       isPublicFlag,
@@ -164,7 +277,9 @@ export default {
       favorited,
       avatarUrl,
       authorName,
-      formatDate
+      formatDate,
+      pdfBlobUrl,
+      imageUrl
     }
   }
 }
@@ -187,5 +302,20 @@ export default {
 .h-48.overflow-hidden.rounded-t-2xl {
   position: relative;
   z-index: 0;
+}
+
+/* Loading Spinner Animation */
+.loading-spinner {
+  width: 40px;
+  height: 40px;
+  border: 4px solid #f3f4f6;
+  border-top: 4px solid #3b82f6;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
 }
 </style>

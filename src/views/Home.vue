@@ -1,24 +1,123 @@
 <!-- src/views/home.vue -->
 <template>
   <div class="max-w-6xl mx-auto">
-    <div class="mb-8">
+    <!-- <div class="mb-8">
       <h1 class="text-3xl font-bold text-gray-800 mb-2">Public Notes Feed</h1>
       <p class="text-gray-600">Discover and interact with notes from the community</p>
+    </div> -->
+
+    <!-- Search & Filter Section -->
+    <div class="bg-white rounded-2xl shadow-lg p-6 mb-8">
+      <!-- Search Bar -->
+      <div class="relative mb-4">
+        <input
+          v-model="searchQuery"
+          type="text"
+          placeholder="Search by title, content, or tags..."
+          class="w-full pl-12 pr-4 py-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-primary-500 focus:border-transparent transition-all"
+          @input="handleSearch"
+        />
+        <svg 
+          class="w-5 h-5 text-gray-400 absolute left-4 top-1/2 transform -translate-y-1/2" 
+          fill="none" 
+          stroke="currentColor" 
+          viewBox="0 0 24 24"
+        >
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+        </svg>
+        
+        <!-- Clear button -->
+        <button
+          v-if="searchQuery"
+          @click="clearSearch"
+          class="absolute right-4 top-1/2 transform -translate-y-1/2 text-gray-400 hover:text-gray-600 transition-colors"
+        >
+          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+          </svg>
+        </button>
+      </div>
+
+      <!-- Tag Filters -->
+      <div v-if="availableTags.length > 0">
+        <div class="flex items-center justify-between mb-3">
+          <p class="text-sm font-medium text-gray-700">Filter by tags:</p>
+          <button
+            v-if="selectedTag"
+            @click="clearTagFilter"
+            class="text-xs text-primary-600 hover:text-primary-700"
+          >
+            Clear filter
+          </button>
+        </div>
+        <div class="flex flex-wrap gap-2">
+          <button
+            v-for="tag in availableTags"
+            :key="tag"
+            @click="filterByTag(tag)"
+            class="px-3 py-1.5 rounded-full text-sm font-medium transition-all transform hover:scale-105"
+            :class="selectedTag === tag 
+              ? 'bg-primary-600 text-white shadow-md' 
+              : 'bg-gray-100 text-gray-700 hover:bg-gray-200'"
+          >
+            #{{ tag }}
+          </button>
+        </div>
+      </div>
+
+      <!-- Active Filters Display -->
+      <div v-if="selectedTag || searchQuery" class="mt-4 pt-4 border-t border-gray-200">
+        <div class="flex items-center gap-2 text-sm text-gray-600">
+          <span class="font-medium">Active filters:</span>
+          <span v-if="selectedTag" class="inline-flex items-center gap-1 px-2 py-1 bg-primary-100 text-primary-700 rounded-full">
+            #{{ selectedTag }}
+            <button @click="clearTagFilter" class="hover:text-primary-900">
+              <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
+          </span>
+          <span v-if="searchQuery" class="inline-flex items-center gap-1 px-2 py-1 bg-gray-100 text-gray-700 rounded-full">
+            Search: "{{ searchQuery }}"
+            <button @click="clearSearch" class="hover:text-gray-900">
+              <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </button>
+          </span>
+        </div>
+      </div>
     </div>
 
+    <!-- Loading State -->
     <div v-if="loading" class="flex justify-center py-12">
       <LoadingSpinner />
     </div>
 
-    <div v-else-if="notes.length === 0" class="text-center py-12">
-      <p class="text-gray-500">No public notes available yet</p>
+    <!-- Empty State -->
+    <div v-else-if="filteredNotes.length === 0" class="text-center py-12">
+      <svg class="w-16 h-16 mx-auto mb-4 text-gray-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+      </svg>
+      <p class="text-gray-500 mb-2">
+        {{ searchQuery || selectedTag ? 'No notes found matching your filters' : 'No public notes available yet' }}
+      </p>
+      <button
+        v-if="searchQuery || selectedTag"
+        @click="clearAllFilters"
+        class="text-primary-600 hover:text-primary-700 text-sm font-medium"
+      >
+        Clear all filters
+      </button>
     </div>
 
+    <!-- Notes Grid -->
     <div v-else class="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
       <NoteCard
-        v-for="note in notes"
+        v-for="note in filteredNotes"
         :key="note.id"
         :note="note"
+        :hide-interactions="isAdmin"
         @like="handleLike"
         @favorite="handleFavorite"
         @comment="openCommentModal"
@@ -54,6 +153,7 @@ import { ref, computed, onMounted } from 'vue'
 import { useStore } from 'vuex'
 import NoteCard from '../components/note/NoteCard.vue'
 import LoadingSpinner from '../components/common/LoadingSpinner.vue'
+import api from '../services/api'
 
 export default {
   components: { NoteCard, LoadingSpinner },
@@ -62,22 +162,113 @@ export default {
     const showCommentModal = ref(false)
     const selectedNoteId = ref(null)
     const commentContent = ref('')
+    const searchQuery = ref('')
+    const selectedTag = ref(null)
+    const availableTags = ref([])
+    const searchTimeout = ref(null)
 
     const notes = computed(() => store.state.notes.notes)
     const loading = computed(() => store.state.notes.loading)
+    
+    // Check if user is admin from localStorage
+    const isAdmin = computed(() => {
+      try {
+        const userStr = localStorage.getItem('user')
+        if (!userStr) return false
+        const user = JSON.parse(userStr)
+        return user?.role === 'ADMIN'
+      } catch (error) {
+        console.error('Error parsing user from localStorage:', error)
+        return false
+      }
+    })
+    
+    // Filter out notes that don't have required data
+    const filteredNotes = computed(() => {
+      return (notes.value || []).filter(note => note && note.id)
+    })
+
+    // Load available tags
+    const loadTags = async () => {
+      try {
+        const response = await api.get('/notes/tags')
+        availableTags.value = response.data || []
+      } catch (error) {
+        console.error('Failed to load tags:', error)
+      }
+    }
+
+    // Debounced search
+    const handleSearch = () => {
+      if (searchTimeout.value) {
+        clearTimeout(searchTimeout.value)
+      }
+      
+      searchTimeout.value = setTimeout(async () => {
+        selectedTag.value = null // Clear tag filter when searching
+        
+        if (searchQuery.value.trim()) {
+          try {
+            const response = await api.get(`/notes/search?query=${encodeURIComponent(searchQuery.value.trim())}`)
+            store.commit('notes/SET_NOTES', response.data)
+          } catch (error) {
+            console.error('Search failed:', error)
+          }
+        } else {
+          // If search is empty, reload feed
+          store.dispatch('notes/fetchFeed')
+        }
+      }, 300)
+    }
+
+    // Filter by tag
+    const filterByTag = async (tag) => {
+      if (selectedTag.value === tag) {
+        // If clicking the same tag, clear filter
+        clearTagFilter()
+        return
+      }
+
+      searchQuery.value = '' // Clear search when filtering by tag
+      selectedTag.value = tag
+      
+      try {
+        const response = await api.get(`/notes/tags/${tag}`)
+        store.commit('notes/SET_NOTES', response.data)
+      } catch (error) {
+        console.error('Failed to filter by tag:', error)
+      }
+    }
+
+    // Clear tag filter
+    const clearTagFilter = () => {
+      selectedTag.value = null
+      store.dispatch('notes/fetchFeed')
+    }
+
+    // Clear search
+    const clearSearch = () => {
+      searchQuery.value = ''
+      store.dispatch('notes/fetchFeed')
+    }
+
+    // Clear all filters
+    const clearAllFilters = () => {
+      searchQuery.value = ''
+      selectedTag.value = null
+      store.dispatch('notes/fetchFeed')
+    }
 
     onMounted(() => {
       store.dispatch('notes/fetchFeed')
+      loadTags()
     })
 
     const handleLike = async (noteId) => {
+      if (isAdmin.value) return
+      
       try {
         await store.dispatch('notes/toggleLike', noteId)
-        // Optional: Show toast for like
-        // store.dispatch('ui/showToast', { 
-        //   message: 'Like updated', 
-        //   type: 'success' 
-        // })
       } catch (error) {
         store.dispatch('ui/showToast', { 
           message: 'Failed to update like', 
@@ -87,15 +278,14 @@ export default {
     }
 
     const handleFavorite = async (noteId) => {
+      if (isAdmin.value) return
+      
       try {
-        // First toggle the favorite
         await store.dispatch('notes/toggleFavorite', noteId)
         
-        // Find the note to check its new favorite status
         const note = notes.value.find(n => String(n.id) === String(noteId))
         const isFavorited = note?.isFavoritedByCurrentUser ?? note?.isFavorited ?? false
         
-        // Show appropriate toast message
         store.dispatch('ui/showToast', { 
           message: isFavorited ? 'Added to favorites' : 'Removed from favorites', 
           type: 'success' 
@@ -144,9 +334,19 @@ export default {
 
     return {
       notes,
+      filteredNotes,
       loading,
+      isAdmin,
       showCommentModal,
       commentContent,
+      searchQuery,
+      selectedTag,
+      availableTags,
+      handleSearch,
+      filterByTag,
+      clearTagFilter,
+      clearSearch,
+      clearAllFilters,
       handleLike,
       handleFavorite,
       openCommentModal,

@@ -28,8 +28,8 @@
               </span>
               <span>•</span>
               <span>{{ formatDate(note.createdAt) }}</span>
-              <span v-if="note.tags?.length">•</span>
-              <div v-if="note.tags?.length" class="flex flex-wrap gap-2">
+            </div>
+            <div v-if="note.tags?.length" class="flex flex-wrap gap-2 my-5">
                 <span
                   v-for="t in note.tags"
                   :key="t"
@@ -38,7 +38,6 @@
                   #{{ t }}
                 </span>
               </div>
-            </div>
           </div>
 
           <!-- Quick actions -->
@@ -104,19 +103,30 @@
       <!-- Media -->
       <div v-if="hasMedia" class="px-8">
         <!-- Image -->
-        <img
-          v-if="isImage"
-          :src="mediaUrl"
-          :alt="note.title"
-          class="w-full rounded-xl border border-gray-100"
-        />
+        <div v-if="isImage" class="relative">
+          <img
+            v-if="mediaBlobUrl"
+            :src="mediaBlobUrl"
+            :alt="note.title"
+            class="w-full rounded-xl border border-gray-100"
+          />
+          <div v-else class="w-full h-96 rounded-xl border border-gray-100 flex items-center justify-center bg-gray-100">
+            <div class="loading-spinner"></div>
+          </div>
+        </div>
+        
         <!-- PDF (หน้าแรก) -->
         <div v-else-if="isPdf" class="rounded-xl border border-gray-100 overflow-hidden">
-          <VuePdfEmbed :source="mediaUrl" :page="1" class="w-full" />
-          <div class="p-3 text-right">
-            <a :href="mediaUrl" target="_blank" rel="noopener" class="text-primary-600 hover:text-primary-700 text-sm">
-              Open full PDF ↗
-            </a>
+          <div v-if="mediaBlobUrl">
+            <VuePdfEmbed :source="mediaBlobUrl" :page="1" class="w-full" />
+            <div class="p-3 text-right">
+              <a :href="mediaBlobUrl" target="_blank" rel="noopener" class="text-primary-600 hover:text-primary-700 text-sm">
+                Open full PDF ↗
+              </a>
+            </div>
+          </div>
+          <div v-else class="w-full h-96 flex items-center justify-center bg-gray-100">
+            <div class="loading-spinner"></div>
           </div>
         </div>
       </div>
@@ -201,7 +211,7 @@
 </template>
 
 <script>
-import { onMounted, ref, computed, watch } from 'vue'
+import { onMounted, ref, computed, watch, onUnmounted } from 'vue'
 import { useStore } from 'vuex'
 import { useRoute } from 'vue-router'
 import LoadingSpinner from '../components/common/LoadingSpinner.vue'
@@ -245,6 +255,15 @@ export default {
     const justLiked = ref(false)
     const justFavorited = ref(false)
 
+    // Media blob URL for prefetched files
+    const mediaBlobUrl = ref(null)
+
+    // --- Avatar prefetch state ---
+    const authorAvatarBlob = ref(null)           // blob url for author avatar
+    const commentAvatarMap = ref({})            // { [commentId]: blobUrl }
+    // keep track of previously prefetched urls to avoid refetching
+    const _prefetchedCommentSources = new Map()
+
     // Watch for changes from store and sync to local state
     watch(() => note.value, (newNote) => {
       if (newNote) {
@@ -258,6 +277,147 @@ export default {
       localComments.value = newComments.map(c => ({ ...c, isNew: false }))
     }, { immediate: true })
 
+    // Fetch file with ngrok headers and return object URL
+    const fetchFileWithHeaders = async (url) => {
+      try {
+        const response = await fetch(url, {
+          headers: { 'ngrok-skip-browser-warning': 'true' }
+        })
+        if (!response.ok) throw new Error(`Failed to fetch ${url} (${response.status})`)
+        const blob = await response.blob()
+        return URL.createObjectURL(blob)
+      } catch (error) {
+        console.error('Error fetching file:', error)
+        return null
+      }
+    }
+
+    // Revoke blob helper
+    const revokeBlobIfNeeded = (blobUrl) => {
+      try {
+        if (blobUrl && blobUrl.startsWith('blob:')) URL.revokeObjectURL(blobUrl)
+      } catch (e) { /* ignore */ }
+    }
+
+    // Watch for media file path changes and prefetch
+    watch(
+      () => note.value?.filePath,
+      async (newPath) => {
+        // Clean up old blob URL
+        if (mediaBlobUrl.value) {
+          URL.revokeObjectURL(mediaBlobUrl.value)
+          mediaBlobUrl.value = null
+        }
+
+        if (newPath && note.value) {
+          const fileType = note.value.fileType || ''
+          const shouldFetch = fileType.startsWith('image') || fileType === 'application/pdf'
+          
+          if (shouldFetch) {
+            const base = note.value.filePath
+            const ver = note.value?.updatedAt || Date.now()
+            const url = `${base}${base.includes('?') ? '&' : '?'}v=${ver}`
+            mediaBlobUrl.value = await fetchFileWithHeaders(url)
+          }
+        }
+      },
+      { immediate: true }
+    )
+
+    // --- Prefetch author avatar ---
+    watch(
+      () => note.value?.author?.profile?.profilePicture,
+      async (raw) => {
+        // cleanup previous
+        if (authorAvatarBlob.value) { revokeBlobIfNeeded(authorAvatarBlob.value); authorAvatarBlob.value = null }
+
+        if (!raw) return
+
+        // try with ngrok header first (handles ngrok interstitial)
+        const ver = note.value?.author?.updatedAt || note.value?.updatedAt || Date.now()
+        const url = `${raw}${raw.includes('?') ? '&' : '?'}v=${ver}`
+
+        const obj = await fetchFileWithHeaders(url)
+        if (obj) {
+          authorAvatarBlob.value = obj
+          return
+        }
+
+        // fallback: try without header
+        try {
+          const resp = await fetch(url)
+          if (resp.ok) {
+            const blob = await resp.blob()
+            authorAvatarBlob.value = URL.createObjectURL(blob)
+            return
+          }
+        } catch (e) {
+          /* ignore */
+        }
+
+        // else leave null -> default will be used
+        authorAvatarBlob.value = null
+      },
+      { immediate: true }
+    )
+
+    // --- Prefetch avatars for comments (map by comment id) ---
+    watch(
+      () => localComments.value.slice(), // watch shallow copy
+      async (newComments) => {
+        // revoke blobs that are no longer present
+        const presentIds = new Set(newComments.map(c => String(c.id)))
+        for (const key of Object.keys(commentAvatarMap.value)) {
+          if (!presentIds.has(String(key))) {
+            revokeBlobIfNeeded(commentAvatarMap.value[key])
+            delete commentAvatarMap.value[key]
+            _prefetchedCommentSources.delete(key)
+          }
+        }
+
+        // fetch any missing ones
+        for (const c of newComments) {
+          const cid = String(c.id)
+          const source = c.authorProfile || null
+          if (!source) continue
+
+          // avoid refetching same source for same comment
+          const last = _prefetchedCommentSources.get(cid)
+          if (last && last === source && commentAvatarMap.value[cid]) continue
+
+          // revoke previous if exists
+          if (commentAvatarMap.value[cid]) {
+            revokeBlobIfNeeded(commentAvatarMap.value[cid])
+            delete commentAvatarMap.value[cid]
+          }
+
+          const ver = c.updatedAt || c.createdAt || Date.now()
+          const url = `${source}${source.includes('?') ? '&' : '?'}v=${ver}`
+
+          // try with header
+          let obj = await fetchFileWithHeaders(url)
+          if (!obj) {
+            // fallback: try without header
+            try {
+              const resp = await fetch(url)
+              if (resp.ok) {
+                const blob = await resp.blob()
+                obj = URL.createObjectURL(blob)
+              }
+            } catch (e) {
+              console.warn('Comment avatar fetch failed for', url, e)
+            }
+          }
+
+          if (obj) {
+            commentAvatarMap.value = { ...commentAvatarMap.value, [cid]: obj }
+            _prefetchedCommentSources.set(cid, source)
+          }
+        }
+      },
+      { immediate: true }
+    )
+
     // ADMIN check
     const currentUser = computed(() => store.getters['auth/currentUser'])
     const isAdmin = computed(() => store.getters['auth/isAdmin'] || currentUser.value?.role === 'ADMIN')
@@ -269,82 +429,45 @@ export default {
 
     const commentContent = ref('')
 
+    // ... (existing handleLike / handleFavorite / submitComment / deleteComment code stays the same)
+    // I'll re-use the existing implementations from your original file:
     const handleLike = async () => {
       if (likeLoading.value) return
-      
       likeLoading.value = true
-      
-      // Optimistic update
       const wasLiked = localLiked.value
       localLiked.value = !localLiked.value
       localLikeCount.value += localLiked.value ? 1 : -1
-      
-      // Animation
-      if (localLiked.value) {
-        justLiked.value = true
-        setTimeout(() => { justLiked.value = false }, 600)
-      }
-
+      if (localLiked.value) { justLiked.value = true; setTimeout(() => { justLiked.value = false }, 600) }
       try {
         await store.dispatch('notes/toggleLike', id)
-        // Silently sync in background without refetching
         const response = await api.get(`/notes/${id}`)
-        if (response.data) {
-          localLikeCount.value = response.data.likeCount ?? localLikeCount.value
-        }
+        if (response.data) { localLikeCount.value = response.data.likeCount ?? localLikeCount.value }
       } catch (error) {
-        // Revert on error
         localLiked.value = wasLiked
         localLikeCount.value += wasLiked ? 1 : -1
-        store.dispatch('ui/showToast', { 
-          message: 'Failed to update like', 
-          type: 'error' 
-        })
-      } finally {
-        likeLoading.value = false
-      }
+        store.dispatch('ui/showToast', { message: 'Failed to update like', type: 'error' })
+      } finally { likeLoading.value = false }
     }
 
     const handleFavorite = async () => {
       if (favoriteLoading.value) return
-      
       favoriteLoading.value = true
-      
-      // Optimistic update
       const wasFavorited = localFavorited.value
       localFavorited.value = !localFavorited.value
-      
-      // Animation
-      if (localFavorited.value) {
-        justFavorited.value = true
-        setTimeout(() => { justFavorited.value = false }, 600)
-      }
-
+      if (localFavorited.value) { justFavorited.value = true; setTimeout(() => { justFavorited.value = false }, 600) }
       try {
         await store.dispatch('notes/toggleFavorite', id)
-        store.dispatch('ui/showToast', { 
-          message: localFavorited.value ? 'Added to favorites' : 'Removed from favorites', 
-          type: 'success' 
-        })
+        store.dispatch('ui/showToast', { message: localFavorited.value ? 'Added to favorites' : 'Removed from favorites', type: 'success' })
       } catch (error) {
-        // Revert on error
         localFavorited.value = wasFavorited
-        store.dispatch('ui/showToast', { 
-          message: 'Failed to update favorite', 
-          type: 'error' 
-        })
-      } finally {
-        favoriteLoading.value = false
-      }
+        store.dispatch('ui/showToast', { message: 'Failed to update favorite', type: 'error' })
+      } finally { favoriteLoading.value = false }
     }
 
     const submitComment = async () => {
       const content = commentContent.value.trim()
       if (!content || commentSubmitting.value) return
-      
       commentSubmitting.value = true
-
-      // Optimistic UI: Add temporary comment
       const tempComment = {
         id: `temp-${Date.now()}`,
         content,
@@ -353,39 +476,24 @@ export default {
         authorProfile: currentUser.value?.profile?.profilePicture || null,
         isNew: true
       }
-      
       localComments.value = [...localComments.value, tempComment]
       commentContent.value = ''
-
       try {
         await store.dispatch('notes/addComment', { noteId: id, content })
-        // Refresh comments from server
         await store.dispatch('notes/fetchComments', id)
-        store.dispatch('ui/showToast', { 
-          message: 'Comment posted', 
-          type: 'success' 
-        })
+        store.dispatch('ui/showToast', { message: 'Comment posted', type: 'success' })
       } catch (error) {
-        // Remove temp comment on error
         localComments.value = localComments.value.filter(c => c.id !== tempComment.id)
-        commentContent.value = content // Restore content
-        store.dispatch('ui/showToast', { 
-          message: 'Failed to post comment', 
-          type: 'error' 
-        })
-      } finally {
-        commentSubmitting.value = false
-      }
+        commentContent.value = content
+        store.dispatch('ui/showToast', { message: 'Failed to post comment', type: 'error' })
+      } finally { commentSubmitting.value = false }
     }
 
     const deleteComment = async (commentId) => {
       if (!isAdmin.value) return
       if (!confirm('Delete this comment?')) return
-      
-      // Optimistic UI: Remove immediately
       const originalComments = [...localComments.value]
       localComments.value = localComments.value.filter(c => String(c.id) !== String(commentId))
-
       try {
         try {
           await api.delete(`/notes/${id}/comments/${commentId}`)
@@ -395,13 +503,12 @@ export default {
         await store.dispatch('notes/fetchComments', id)
         store.dispatch('ui/showToast', { message: 'Comment deleted', type: 'success' })
       } catch (e) {
-        // Revert on error
         localComments.value = originalComments
         store.dispatch('ui/showToast', { message: 'Failed to delete comment', type: 'error' })
       }
     }
 
-    // ===== Media from backend =====
+    // ===== Media helpers =====
     const hasMedia = computed(() => !!note.value?.filePath)
     const isImage = computed(() => (note.value?.fileType || '').startsWith('image'))
     const isPdf = computed(() => (note.value?.fileType || '') === 'application/pdf')
@@ -412,36 +519,32 @@ export default {
       return `${base}${base.includes('?') ? '&' : '?'}v=${ver}`
     })
 
-    // ----- Avatars -----
-    const authorName = computed(
-      () =>
-        note.value?.author?.profile?.name ||
-        note.value?.author?.name ||
-        note.value?.author?.username ||
-        'Unknown'
+    // ----- Avatars accessors used in template -----
+    const authorName = computed(() =>
+      note.value?.author?.profile?.name ||
+      note.value?.author?.name ||
+      note.value?.author?.username ||
+      'Unknown'
     )
-    const authorAvatar = computed(() => {
-      const u = note.value?.author
-      const raw = u?.profile?.profilePicture || u?.profilePicture || u?.avatarUrl || null
-      const base = raw || PRIMARY_DEFAULT
-      const ver = u?.updatedAt || note.value?.updatedAt || Date.now()
-      return `${base}${base.includes('?') ? '&' : '?'}v=${ver}`
-    })
+
+    // authorAvatar returns blob URL when prefetched, otherwise PRIMARY_DEFAULT
+    const authorAvatar = computed(() => authorAvatarBlob.value || PRIMARY_DEFAULT)
+
     const onAuthorAvatarError = (e) => {
       e.target.src = `${FALLBACK_DEFAULT}?v=${Date.now()}`
     }
 
-    const displayAuthor = (c) => c.authorName || 'Someone'
-
+    // commentAvatar(c) returns blob URL for a comment or PRIMARY_DEFAULT
     const commentAvatar = (c) => {
-      const raw = c?.authorProfile || null
-      const base = raw || PRIMARY_DEFAULT
-      const ver = c?.updatedAt || c?.createdAt || Date.now()
-      return `${base}${base.includes('?') ? '&' : '?'}v=${ver}`
+      const cid = String(c.id)
+      return commentAvatarMap.value[cid] || PRIMARY_DEFAULT
     }
+
     const onCommentAvatarError = (e) => {
       e.target.src = `${FALLBACK_DEFAULT}?v=${Date.now()}`
     }
+
+    const displayAuthor = (c) => c.authorName || 'Someone'
 
     const formatDate = (iso) => {
       try {
@@ -450,6 +553,17 @@ export default {
         return ''
       }
     }
+
+    // Cleanup on unmount
+    onUnmounted(() => {
+      if (mediaBlobUrl.value) { revokeBlobIfNeeded(mediaBlobUrl.value); mediaBlobUrl.value = null }
+      if (authorAvatarBlob.value) { revokeBlobIfNeeded(authorAvatarBlob.value); authorAvatarBlob.value = null }
+      for (const k of Object.keys(commentAvatarMap.value)) {
+        revokeBlobIfNeeded(commentAvatarMap.value[k])
+      }
+      commentAvatarMap.value = {}
+      _prefetchedCommentSources.clear()
+    })
 
     return {
       loading,
@@ -473,6 +587,7 @@ export default {
       isImage,
       isPdf,
       mediaUrl,
+      mediaBlobUrl,
       authorName,
       authorAvatar,
       onAuthorAvatarError,
@@ -518,5 +633,20 @@ export default {
 
 .animate-slide-in {
   animation: slide-in 0.4s ease-out;
+}
+
+/* Loading Spinner Animation */
+.loading-spinner {
+  width: 40px;
+  height: 40px;
+  border: 4px solid #f3f4f6;
+  border-top: 4px solid #3b82f6;
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
 }
 </style>

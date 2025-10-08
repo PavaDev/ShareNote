@@ -171,7 +171,8 @@ export default {
       const payload = {
         title: noteData.title,
         content: noteData.content,
-        public: !!noteData.isPublic, // <== สำคัญ
+        public: !!noteData.isPublic,
+        tags: noteData.tags || []
       }
       // กันเหนียวเก็บไว้ใช้งานฝั่ง FE ด้วย
       payload.isPublic = payload.public
@@ -195,7 +196,8 @@ export default {
       const payload = {
         title: noteData.title,
         content: noteData.content,
-        public: !!noteData.isPublic, // <== สำคัญ
+        public: !!noteData.isPublic,
+        tags: noteData.tags || []
       }
       payload.isPublic = payload.public
 
