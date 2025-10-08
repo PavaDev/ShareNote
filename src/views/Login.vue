@@ -317,7 +317,7 @@ export default {
     }
     
     const loginWithGoogle = () => {
-      window.location.href = 'https://protestable-combinatorial-thomas.ngrok-free.dev/api/oauth2/authorization/google'
+      window.location.href = 'https://newsiest-unprofessing-bryleigh.ngrok-free.dev/api/oauth2/authorization/google'
     }
     
     const handleForgotPassword = async () => {

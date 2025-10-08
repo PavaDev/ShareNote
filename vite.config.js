@@ -7,11 +7,11 @@ export default defineConfig({
     port: 5173,
     proxy: {
       '/api': {
-        target: 'https://protestable-combinatorial-thomas.ngrok-free.dev',
+        target: 'https://newsiest-unprofessing-bryleigh.ngrok-free.dev',
         changeOrigin: true
       },
       '/uploads': {
-        target: 'https://protestable-combinatorial-thomas.ngrok-free.dev',
+        target: 'https://newsiest-unprofessing-bryleigh.ngrok-free.dev',
         changeOrigin: true
       }
     },
