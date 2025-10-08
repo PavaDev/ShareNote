@@ -163,14 +163,6 @@
                 <img :src="previewUrl" alt="Preview" class="w-full h-48 object-cover rounded-lg" />
               </div>
               
-              <!-- Replace button -->
-              <button 
-                type="button"
-                class="btn btn-light w-full mt-3" 
-                @click="pickFile"
-              >
-                Choose another file
-              </button>
             </div>
           </div>
         </div>

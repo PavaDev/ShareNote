@@ -7,11 +7,11 @@ export default defineConfig({
     port: 5173,
     proxy: {
       '/api': {
-        target: 'https://newsiest-unprofessing-bryleigh.ngrok-free.dev',
+        target: 'https://prolific-recreation-production.up.railway.app',
         changeOrigin: true
       },
       '/uploads': {
-        target: 'https://newsiest-unprofessing-bryleigh.ngrok-free.dev',
+        target: 'https://prolific-recreation-production.up.railway.app',
         changeOrigin: true
       }
     },

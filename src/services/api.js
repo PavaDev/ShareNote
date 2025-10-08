@@ -3,7 +3,7 @@ import store from '../store'
 import router from '../components/router'
 
 const api = axios.create({
-  baseURL: 'https://newsiest-unprofessing-bryleigh.ngrok-free.dev/api',
+  baseURL: 'https://prolific-recreation-production.up.railway.app/api',
   timeout: 10000,
 })
 
