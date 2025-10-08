@@ -222,13 +222,22 @@ export default {
     }
 
     const saveNote = async (noteData) => {
-      if (selectedNote.value) {
-        await store.dispatch('notes/updateNote', { id: selectedNote.value.id, noteData })
-      } else {
-        await store.dispatch('notes/createNote', noteData)
+      try {
+        if (selectedNote.value) {
+          await store.dispatch('notes/updateNote', { id: selectedNote.value.id, noteData })
+        } else {
+          await store.dispatch('notes/createNote', noteData)
+        }
+        closeModals()
+        store.dispatch('notes/fetchMyNotes')
+      } catch (error) {
+        console.error('Failed to save note:', error)
+      } finally {
+        // Call the callback to re-enable button
+        if (noteData._onComplete) {
+          noteData._onComplete()
+        }
       }
-      closeModals()
-      store.dispatch('notes/fetchMyNotes')
     }
 
     // ---- Confirm modal (replacement for window.confirm) ----

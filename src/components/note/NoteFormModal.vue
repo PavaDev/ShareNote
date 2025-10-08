@@ -191,7 +191,7 @@
           <button type="button" @click="$emit('close')" class="btn btn-secondary">
             Cancel
           </button>
-          <button type="submit" class="btn btn-primary">
+          <button type="submit" class="btn btn-primary" :disabled="isCreating">
             {{ note ? 'Update' : 'Create' }} Note
           </button>
         </div>
@@ -212,6 +212,7 @@ export default {
     const fileInput = ref(null)
     const previewUrl = ref(null)
     const tagInput = ref('')
+    const isCreating = ref(false)
     
     // Predefined common tags
     const predefinedTags = [
@@ -366,6 +367,8 @@ export default {
     }
 
     const handleSubmit = () => {
+      isCreating.value = true
+      
       emit('save', {
         title: form.value.title?.trim() ?? '',
         content: form.value.content ?? '',
@@ -373,6 +376,10 @@ export default {
         tags: form.value.tags,
         file: form.value.file || null
       })
+      
+      setTimeout(() => {
+        isCreating.value = false
+      }, 5000)
     }
 
     onUnmounted(() => {
@@ -386,6 +393,7 @@ export default {
       isImageFile,
       tagInput,
       predefinedTags,
+      isCreating,
       pickFile,
       handleFileSelect,
       onDrop,

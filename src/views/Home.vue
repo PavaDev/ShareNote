@@ -1,10 +1,10 @@
 <!-- src/views/home.vue -->
 <template>
   <div class="max-w-6xl mx-auto">
-    <!-- <div class="mb-8">
+    <div class="mb-8">
       <h1 class="text-3xl font-bold text-gray-800 mb-2">Public Notes Feed</h1>
       <p class="text-gray-600">Discover and interact with notes from the community</p>
-    </div> -->
+    </div>
 
     <!-- Search & Filter Section -->
     <div class="bg-white rounded-2xl shadow-lg p-6 mb-8">
@@ -41,13 +41,16 @@
       <!-- Tag Filters -->
       <div v-if="availableTags.length > 0">
         <div class="flex items-center justify-between mb-3">
-          <p class="text-sm font-medium text-gray-700">Filter by tags:</p>
+          <p class="text-sm font-medium text-gray-700">
+            Filter by tags: 
+            <span v-if="selectedTags.length > 0" class="text-primary-600">({{ selectedTags.length }} selected)</span>
+          </p>
           <button
-            v-if="selectedTag"
+            v-if="selectedTags.length > 0"
             @click="clearTagFilter"
             class="text-xs text-primary-600 hover:text-primary-700"
           >
-            Clear filter
+            Clear all tags
           </button>
         </div>
         <div class="flex flex-wrap gap-2">
@@ -56,7 +59,7 @@
             :key="tag"
             @click="filterByTag(tag)"
             class="px-3 py-1.5 rounded-full text-sm font-medium transition-all transform hover:scale-105"
-            :class="selectedTag === tag 
+            :class="selectedTags.includes(tag)
               ? 'bg-primary-600 text-white shadow-md' 
               : 'bg-gray-100 text-gray-700 hover:bg-gray-200'"
           >
@@ -66,17 +69,25 @@
       </div>
 
       <!-- Active Filters Display -->
-      <div v-if="selectedTag || searchQuery" class="mt-4 pt-4 border-t border-gray-200">
-        <div class="flex items-center gap-2 text-sm text-gray-600">
+      <div v-if="selectedTags.length > 0 || searchQuery" class="mt-4 pt-4 border-t border-gray-200">
+        <div class="flex flex-wrap items-center gap-2 text-sm text-gray-600">
           <span class="font-medium">Active filters:</span>
-          <span v-if="selectedTag" class="inline-flex items-center gap-1 px-2 py-1 bg-primary-100 text-primary-700 rounded-full">
-            #{{ selectedTag }}
-            <button @click="clearTagFilter" class="hover:text-primary-900">
+          
+          <!-- Selected Tags -->
+          <span 
+            v-for="tag in selectedTags" 
+            :key="tag"
+            class="inline-flex items-center gap-1 px-2 py-1 bg-primary-100 text-primary-700 rounded-full"
+          >
+            #{{ tag }}
+            <button @click="filterByTag(tag)" class="hover:text-primary-900">
               <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
               </svg>
             </button>
           </span>
+          
+          <!-- Search Query -->
           <span v-if="searchQuery" class="inline-flex items-center gap-1 px-2 py-1 bg-gray-100 text-gray-700 rounded-full">
             Search: "{{ searchQuery }}"
             <button @click="clearSearch" class="hover:text-gray-900">
@@ -100,10 +111,10 @@
         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
       </svg>
       <p class="text-gray-500 mb-2">
-        {{ searchQuery || selectedTag ? 'No notes found matching your filters' : 'No public notes available yet' }}
+        {{ searchQuery || selectedTags.length > 0 ? 'No notes found matching your filters' : 'No public notes available yet' }}
       </p>
       <button
-        v-if="searchQuery || selectedTag"
+        v-if="searchQuery || selectedTags.length > 0"
         @click="clearAllFilters"
         class="text-primary-600 hover:text-primary-700 text-sm font-medium"
       >
@@ -163,7 +174,7 @@ export default {
     const selectedNoteId = ref(null)
     const commentContent = ref('')
     const searchQuery = ref('')
-    const selectedTag = ref(null)
+    const selectedTags = ref([]) // Changed from selectedTag to selectedTags array
     const availableTags = ref([])
     const searchTimeout = ref(null)
 
@@ -205,7 +216,7 @@ export default {
       }
       
       searchTimeout.value = setTimeout(async () => {
-        selectedTag.value = null // Clear tag filter when searching
+        selectedTags.value = [] // Clear tag filters when searching
         
         if (searchQuery.value.trim()) {
           try {
@@ -221,28 +232,55 @@ export default {
       }, 300)
     }
 
-    // Filter by tag
+    // Filter by tags (supports multiple tags)
     const filterByTag = async (tag) => {
-      if (selectedTag.value === tag) {
-        // If clicking the same tag, clear filter
-        clearTagFilter()
-        return
+      const index = selectedTags.value.indexOf(tag)
+      
+      if (index > -1) {
+        // Tag already selected, remove it
+        selectedTags.value.splice(index, 1)
+      } else {
+        // Add tag to selection
+        selectedTags.value.push(tag)
       }
 
-      searchQuery.value = '' // Clear search when filtering by tag
-      selectedTag.value = tag
+      searchQuery.value = '' // Clear search when filtering by tags
       
+      // If no tags selected, show all
+      if (selectedTags.value.length === 0) {
+        store.dispatch('notes/fetchFeed')
+        return
+      }
+      
+      // Filter by multiple tags (OR logic - show notes that have ANY of the selected tags)
       try {
-        const response = await api.get(`/notes/tags/${tag}`)
-        store.commit('notes/SET_NOTES', response.data)
+        // Fetch notes for each tag and combine results
+        const promises = selectedTags.value.map(t => api.get(`/notes/tags/${t}`))
+        const responses = await Promise.all(promises)
+        
+        // Combine and deduplicate notes
+        const allNotes = []
+        const noteIds = new Set()
+        
+        responses.forEach(response => {
+          const notes = response.data?.content || response.data || []
+          notes.forEach(note => {
+            if (!noteIds.has(note.id)) {
+              noteIds.add(note.id)
+              allNotes.push(note)
+            }
+          })
+        })
+        
+        store.commit('notes/SET_NOTES', { content: allNotes })
       } catch (error) {
-        console.error('Failed to filter by tag:', error)
+        console.error('Failed to filter by tags:', error)
       }
     }
 
-    // Clear tag filter
+    // Clear all tag filters
     const clearTagFilter = () => {
-      selectedTag.value = null
+      selectedTags.value = []
       store.dispatch('notes/fetchFeed')
     }
 
@@ -255,7 +293,7 @@ export default {
     // Clear all filters
     const clearAllFilters = () => {
       searchQuery.value = ''
-      selectedTag.value = null
+      selectedTags.value = []
       store.dispatch('notes/fetchFeed')
     }
 
@@ -340,7 +378,7 @@ export default {
       showCommentModal,
       commentContent,
       searchQuery,
-      selectedTag,
+      selectedTags,
       availableTags,
       handleSearch,
       filterByTag,
