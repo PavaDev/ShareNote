@@ -7,10 +7,19 @@ const api = axios.create({
   timeout: 10000,
 })
 
+// attach headers + auth token
 api.interceptors.request.use(
   (config) => {
+    // ensure headers object exists
+    config.headers = config.headers || {}
+
+    // ngrok interstitial bypass header (added for every request)
+    config.headers['ngrok-skip-browser-warning'] = 'true'
+
+    // auth token
     const token = localStorage.getItem('token')
     if (token) config.headers.Authorization = `Bearer ${token}`
+
     return config
   },
   (error) => Promise.reject(error)
