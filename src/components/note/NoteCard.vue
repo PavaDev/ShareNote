@@ -121,8 +121,7 @@ import VuePdfEmbed from 'vue-pdf-embed'
 import { GlobalWorkerOptions } from 'pdfjs-dist/build/pdf'
 GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js'
 
-const DEFAULT_AVATAR = '/public/default-avatar.svg'
-const FALLBACK_DEFAULT = '/default-avatar.svg' // used when fetch fails
+const DEFAULT_AVATAR = '/default-avatar.svg'
 
 export default {
   components: { VuePdfEmbed },
