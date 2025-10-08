@@ -7,13 +7,22 @@ export default defineConfig({
     port: 5173,
     proxy: {
       '/api': {
-        target: 'http://localhost:8080',
+        target: 'https://protestable-combinatorial-thomas.ngrok-free.dev',
         changeOrigin: true
       },
       '/uploads': {
-        target: 'http://localhost:8080',
+        target: 'https://protestable-combinatorial-thomas.ngrok-free.dev',
         changeOrigin: true
       }
+    },
+    build: {
+    outDir: 'dist',
+    assetsDir: 'assets',
+    rollupOptions: {
+      output: {
+        manualChunks: undefined
+      }
     }
+  }
   }
 })
